@@ -23,6 +23,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
+	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/operator/pkg/gateway-api/helpers"
 	"github.com/cilium/cilium/operator/pkg/gateway-api/indexers"
 	"github.com/cilium/cilium/operator/pkg/model/translation"
@@ -315,9 +316,10 @@ func Test_Conformance(t *testing.T) {
 			c := clientBuilder.Build()
 
 			r := &gatewayReconciler{
-				Client:     c,
-				translator: gatewayAPITranslator,
-				logger:     logger,
+				Client:         c,
+				translator:     gatewayAPITranslator,
+				logger:         logger,
+				operatorConfig: &operatorOption.OperatorConfig{},
 			}
 
 			// Reconcile all related HTTPRoute objects

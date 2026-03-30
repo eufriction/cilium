@@ -281,6 +281,26 @@ type HTTPRequestMirror struct {
 	Denominator int32 `json:"denominator,omitempty"`
 }
 
+// CustomHTTPFilter holds a single resolved Envoy HTTP filter that was
+// referenced from an HTTPRoute rule via a Gateway API ExtensionRef pointing
+// at a CiliumEnvoyHTTPFilter custom resource.
+type CustomHTTPFilter struct {
+	// Name is the Envoy HTTP filter name, e.g. "envoy.filters.http.oauth2".
+	Name string `json:"name"`
+
+	// Placement is "First" or "Last", matching CiliumEnvoyHTTPFilterPlacement.
+	// "First" inserts the filter before generated route filters;
+	// "Last" inserts it after generated route filters but before the terminal
+	// router filter.
+	Placement string `json:"placement"`
+
+	// TypeURL is the protobuf Any type URL of the filter configuration.
+	TypeURL string `json:"type_url,omitempty"`
+
+	// Config holds the marshaled protobuf bytes of the filter configuration.
+	Config []byte `json:"config,omitempty"`
+}
+
 // HTTPRoute holds all the details needed to route HTTP traffic to a backend.
 type HTTPRoute struct {
 	Name string `json:"name,omitempty"`
@@ -327,6 +347,12 @@ type HTTPRoute struct {
 
 	// Retry holds the retry configuration for a route.
 	Retry *HTTPRetry `json:"retry,omitempty"`
+
+	// CustomHTTPFilters holds the resolved Envoy HTTP filters referenced via
+	// ExtensionRef in the HTTPRoute rule. The translation layer injects these
+	// into the Envoy HTTP filter chain at the position indicated by each
+	// filter's Placement field.
+	CustomHTTPFilters []CustomHTTPFilter `json:"custom_http_filters,omitempty"`
 }
 
 type BackendHTTPFilter struct {

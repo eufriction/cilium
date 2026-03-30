@@ -41,6 +41,17 @@ type Input struct {
 	Services            []corev1.Service
 	ServiceImports      []mcsapiv1alpha1.ServiceImport
 	BackendTLSPolicyMap helpers.BackendTLSPolicyServiceMap
+
+	// EnableExtensionRefFilters indicates whether CiliumEnvoyHTTPFilter
+	// ExtensionRef resolution is enabled. When false, any HTTPRoute rule that
+	// contains an ExtensionRef filter will produce a 500 DirectResponse
+	// (fail-closed).
+	EnableExtensionRefFilters bool
+
+	// CiliumEnvoyHTTPFilters is the pre-fetched list of CiliumEnvoyHTTPFilter
+	// objects available for ExtensionRef resolution. The reconciler populates
+	// this only when EnableExtensionRefFilters is true.
+	CiliumEnvoyHTTPFilters []v2alpha1.CiliumEnvoyHTTPFilter
 }
 
 // GatewayAPI translates Gateway API resources into a model.
@@ -94,7 +105,7 @@ func GatewayAPI(log *slog.Logger, input Input) ([]model.HTTPListener, []model.TL
 		}
 
 		var httpRoutes []model.HTTPRoute
-		httpRoutes = append(httpRoutes, toHTTPRoutes(log, l, listenerHostnamesByProtocol, input.HTTPRoutes, input.Services, input.ServiceImports, input.ReferenceGrants, input.BackendTLSPolicyMap)...)
+		httpRoutes = append(httpRoutes, toHTTPRoutes(log, l, listenerHostnamesByProtocol, input.HTTPRoutes, input.Services, input.ServiceImports, input.ReferenceGrants, input.BackendTLSPolicyMap, input.EnableExtensionRefFilters, input.CiliumEnvoyHTTPFilters)...)
 		httpRoutes = append(httpRoutes, toGRPCRoutes(l, listenerHostnamesByProtocol, input.GRPCRoutes, input.Services, input.ServiceImports, input.ReferenceGrants)...)
 		resHTTP = append(resHTTP, model.HTTPListener{
 			Name: string(l.Name),
@@ -176,6 +187,8 @@ func toHTTPRoutes(log *slog.Logger,
 	serviceImports []mcsapiv1alpha1.ServiceImport,
 	grants []gatewayv1beta1.ReferenceGrant,
 	btlspMap helpers.BackendTLSPolicyServiceMap,
+	enableExtensionRefFilters bool,
+	cehfs []v2alpha1.CiliumEnvoyHTTPFilter,
 ) []model.HTTPRoute {
 	var httpRoutes []model.HTTPRoute
 	for _, r := range input {
@@ -235,7 +248,7 @@ func toHTTPRoutes(log *slog.Logger,
 			computedHost = nil
 		}
 
-		httpRoutes = append(httpRoutes, extractRoutes(log, int32(listener.Port), computedHost, r, services, serviceImports, grants, btlspMap)...)
+		httpRoutes = append(httpRoutes, extractRoutes(log, int32(listener.Port), computedHost, r, services, serviceImports, grants, btlspMap, enableExtensionRefFilters, false, cehfs)...)
 
 	}
 	return httpRoutes
@@ -249,6 +262,9 @@ func extractRoutes(logger *slog.Logger,
 	serviceImports []mcsapiv1alpha1.ServiceImport,
 	grants []gatewayv1beta1.ReferenceGrant,
 	btlspMap helpers.BackendTLSPolicyServiceMap,
+	enableExtensionRefFilters bool,
+	isGamma bool,
+	cehfs []v2alpha1.CiliumEnvoyHTTPFilter,
 ) []model.HTTPRoute {
 	var httpRoutes []model.HTTPRoute
 	for _, rule := range hr.Spec.Rules {
@@ -320,6 +336,8 @@ func extractRoutes(logger *slog.Logger,
 		var requestRedirectFilter *model.HTTPRequestRedirectFilter
 		var rewriteFilter *model.HTTPURLRewriteFilter
 		var requestMirrors []*model.HTTPRequestMirror
+		var customHTTPFilters []model.CustomHTTPFilter
+		var extensionRefError bool
 
 		for _, f := range rule.Filters {
 			switch f.Type {
@@ -344,7 +362,24 @@ func extractRoutes(logger *slog.Logger,
 				if svc != nil {
 					requestMirrors = append(requestMirrors, toHTTPRequestMirror(*svc, f.RequestMirror, hr.Namespace))
 				}
+			case gatewayv1.HTTPRouteFilterExtensionRef:
+				// resolveExtensionRef is fail-closed: returns (nil, false) when the
+				// feature is disabled, the group/kind is wrong, or the object is missing.
+				resolved, ok := resolveExtensionRef(logger, f.ExtensionRef, hr.Namespace, hr.Name, enableExtensionRefFilters, isGamma, cehfs)
+				if !ok {
+					extensionRefError = true
+				} else {
+					customHTTPFilters = append(customHTTPFilters, resolved...)
+				}
 			}
+		}
+
+		// Fail-closed: if any ExtensionRef in this rule failed to resolve, the
+		// whole rule returns 500 and no backends are used.
+		if extensionRefError {
+			bes = nil
+			dr = &model.DirectResponse{StatusCode: 500}
+			customHTTPFilters = nil
 		}
 
 		if len(rule.Matches) == 0 {
@@ -358,6 +393,7 @@ func extractRoutes(logger *slog.Logger,
 				RequestRedirect:        requestRedirectFilter,
 				Rewrite:                rewriteFilter,
 				RequestMirrors:         requestMirrors,
+				CustomHTTPFilters:      customHTTPFilters,
 				Timeout:                toTimeout(rule.Timeouts),
 				Retry:                  toHTTPRetry(rule.Retry),
 			})
@@ -378,12 +414,93 @@ func extractRoutes(logger *slog.Logger,
 				RequestRedirect:        requestRedirectFilter,
 				Rewrite:                rewriteFilter,
 				RequestMirrors:         requestMirrors,
+				CustomHTTPFilters:      customHTTPFilters,
 				Timeout:                toTimeout(rule.Timeouts),
 				Retry:                  toHTTPRetry(rule.Retry),
 			})
 		}
 	}
 	return httpRoutes
+}
+
+// resolveExtensionRef resolves a single Gateway API ExtensionRef filter into
+// zero or more model.CustomHTTPFilter values.
+//
+// It is fail-closed: any condition that prevents resolution returns (nil, false)
+// which will cause the entire HTTPRoute rule to be replaced with a 500
+// DirectResponse by the caller.
+func resolveExtensionRef(
+	logger *slog.Logger,
+	ref *gatewayv1.LocalObjectReference,
+	hrNamespace string,
+	hrName string,
+	enabled bool,
+	isGamma bool,
+	cehfs []v2alpha1.CiliumEnvoyHTTPFilter,
+) ([]model.CustomHTTPFilter, bool) {
+	if !enabled {
+		if isGamma {
+			logger.Warn("HTTPRoute ExtensionRef filters are not supported for GAMMA routes; rule will return 500",
+				logfields.K8sNamespace, hrNamespace,
+				logfields.HTTPRoute, hrName)
+		} else {
+			logger.Warn("HTTPRoute ExtensionRef filter used but feature is disabled; rule will return 500",
+				logfields.K8sNamespace, hrNamespace,
+				logfields.HTTPRoute, hrName)
+		}
+		return nil, false
+	}
+	if ref == nil {
+		return nil, false
+	}
+	// Only the cilium.io group and CiliumEnvoyHTTPFilter kind are supported.
+	if string(ref.Group) != v2alpha1.SchemeGroupVersion.Group {
+		logger.Warn("HTTPRoute ExtensionRef has unsupported group; expected cilium.io",
+			logfields.K8sNamespace, hrNamespace,
+			logfields.HTTPRoute, hrName,
+			logfields.Name, ref.Name,
+			logfields.Group, ref.Group)
+		return nil, false
+	}
+	if string(ref.Kind) != "CiliumEnvoyHTTPFilter" {
+		logger.Warn("HTTPRoute ExtensionRef has unsupported kind; expected CiliumEnvoyHTTPFilter",
+			logfields.K8sNamespace, hrNamespace,
+			logfields.HTTPRoute, hrName,
+			logfields.Name, ref.Name,
+			logfields.Kind, ref.Kind)
+		return nil, false
+	}
+	// Look up the CiliumEnvoyHTTPFilter in the pre-fetched list.
+	// ExtensionRef is a LocalObjectReference, so it must be in the same
+	// namespace as the HTTPRoute.
+	for i := range cehfs {
+		if cehfs[i].Name == string(ref.Name) && cehfs[i].Namespace == hrNamespace {
+			return cehfToModelFilters(&cehfs[i]), true
+		}
+	}
+	logger.Warn("HTTPRoute ExtensionRef references a CiliumEnvoyHTTPFilter that does not exist; rule will return 500",
+		logfields.K8sNamespace, hrNamespace,
+		logfields.HTTPRoute, hrName,
+		logfields.Name, ref.Name)
+	return nil, false
+}
+
+// cehfToModelFilters converts a CiliumEnvoyHTTPFilter into a slice of
+// model.CustomHTTPFilter values ready for ingestion into the route model.
+func cehfToModelFilters(cehf *v2alpha1.CiliumEnvoyHTTPFilter) []model.CustomHTTPFilter {
+	filters := make([]model.CustomHTTPFilter, 0, len(cehf.Spec.Filters))
+	for _, entry := range cehf.Spec.Filters {
+		f := model.CustomHTTPFilter{
+			Name:      entry.Name,
+			Placement: string(cehf.Spec.Placement),
+		}
+		if entry.TypedConfig.Any != nil {
+			f.TypeURL = entry.TypedConfig.TypeUrl
+			f.Config = entry.TypedConfig.Value
+		}
+		filters = append(filters, f)
+	}
+	return filters
 }
 
 func addBackendTLSDetails(log *slog.Logger, be model.Backend, svc *corev1.Service, btlspMap helpers.BackendTLSPolicyServiceMap) (model.Backend, bool) {

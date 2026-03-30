@@ -183,17 +183,27 @@ func (r *gatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return controllerruntime.Fail(err)
 	}
 
+	cehfList := &v2alpha1.CiliumEnvoyHTTPFilterList{}
+	if r.operatorConfig.EnableGatewayAPIExtensionRefFilters {
+		if err := r.Client.List(ctx, cehfList); err != nil {
+			scopedLog.ErrorContext(ctx, "Unable to list CiliumEnvoyHTTPFilters", logfields.Error, err)
+			return r.handleReconcileErrorWithStatus(ctx, err, original, gw)
+		}
+	}
+
 	httpListeners, tlsPassthroughListeners := ingestion.GatewayAPI(scopedLog, ingestion.Input{
-		GatewayClass:        *gwc,
-		GatewayClassConfig:  r.getGatewayClassConfig(ctx, gwc),
-		Gateway:             *gw,
-		HTTPRoutes:          httpRoutes,
-		TLSRoutes:           tlsRoutes,
-		GRPCRoutes:          grpcRoutes,
-		Services:            servicesList.Items,
-		ServiceImports:      serviceImportsList.Items,
-		ReferenceGrants:     grants.Items,
-		BackendTLSPolicyMap: btlspMap,
+		GatewayClass:              *gwc,
+		GatewayClassConfig:        r.getGatewayClassConfig(ctx, gwc),
+		Gateway:                   *gw,
+		HTTPRoutes:                httpRoutes,
+		TLSRoutes:                 tlsRoutes,
+		GRPCRoutes:                grpcRoutes,
+		Services:                  servicesList.Items,
+		ServiceImports:            serviceImportsList.Items,
+		ReferenceGrants:           grants.Items,
+		BackendTLSPolicyMap:       btlspMap,
+		EnableExtensionRefFilters: r.operatorConfig.EnableGatewayAPIExtensionRefFilters,
+		CiliumEnvoyHTTPFilters:    cehfList.Items,
 	})
 
 	validListener, err := r.setListenerStatus(ctx, gw, httpRouteList, tlsRouteList, grpcRouteList)

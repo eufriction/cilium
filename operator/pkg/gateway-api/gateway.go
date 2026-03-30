@@ -28,6 +28,7 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 	mcsapiv1alpha1 "sigs.k8s.io/mcs-api/pkg/apis/v1alpha1"
 
+	operatorOption "github.com/cilium/cilium/operator/option"
 	"github.com/cilium/cilium/operator/pkg/gateway-api/helpers"
 	"github.com/cilium/cilium/operator/pkg/gateway-api/indexers"
 	"github.com/cilium/cilium/operator/pkg/model/translation"
@@ -48,19 +49,21 @@ type gatewayReconciler struct {
 	Scheme     *runtime.Scheme
 	translator translation.Translator
 
-	logger        *slog.Logger
-	installedCRDs []schema.GroupVersionKind
+	logger         *slog.Logger
+	installedCRDs  []schema.GroupVersionKind
+	operatorConfig *operatorOption.OperatorConfig
 }
 
-func newGatewayReconciler(mgr ctrl.Manager, translator translation.Translator, logger *slog.Logger, installedCRDs []schema.GroupVersionKind) *gatewayReconciler {
+func newGatewayReconciler(mgr ctrl.Manager, translator translation.Translator, logger *slog.Logger, installedCRDs []schema.GroupVersionKind, config *operatorOption.OperatorConfig) *gatewayReconciler {
 	scopedLog := logger.With(logfields.Controller, gateway)
 
 	return &gatewayReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		translator:    translator,
-		logger:        scopedLog,
-		installedCRDs: installedCRDs,
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		translator:     translator,
+		logger:         scopedLog,
+		installedCRDs:  installedCRDs,
+		operatorConfig: config,
 	}
 }
 

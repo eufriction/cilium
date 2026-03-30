@@ -222,5 +222,10 @@ func readGatewayInput(t *testing.T, testName string) Input {
 	}
 	input.BackendTLSPolicyMap = btlspMap
 
+	readInput(t, fmt.Sprintf("%s/%s/%s", basedGatewayTestdataDir, rewriteTestName(testName), "input-cehf.yaml"), &input.CiliumEnvoyHTTPFilters)
+	if len(input.CiliumEnvoyHTTPFilters) > 0 {
+		input.EnableExtensionRefFilters = true
+	}
+
 	return input
 }
