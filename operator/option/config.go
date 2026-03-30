@@ -172,6 +172,10 @@ const (
 	// This must be enabled along with enable-envoy-config in cilium agent.
 	EnableGatewayAPI = "enable-gateway-api"
 
+	// EnableGatewayAPIExtensionRefFilters enables support for Gateway API
+	// HTTPRoute ExtensionRef filters backed by CiliumEnvoyHTTPFilter custom resources.
+	EnableGatewayAPIExtensionRefFilters = "enable-gateway-api-extension-ref-filters"
+
 	// KubeProxyReplacement is equivalent to the cilium-agent option, and
 	// is used to provide hints for misconfiguration.
 	KubeProxyReplacement = "kube-proxy-replacement"
@@ -258,6 +262,10 @@ type OperatorConfig struct {
 	// EnableGatewayAPI enables support of Gateway API
 	EnableGatewayAPI bool
 
+	// EnableGatewayAPIExtensionRefFilters enables support for Gateway API
+	// HTTPRoute ExtensionRef filters backed by CiliumEnvoyHTTPFilter custom resources.
+	EnableGatewayAPIExtensionRefFilters bool
+
 	// ProxyIdleTimeoutSeconds is the idle timeout for the proxy to upstream cluster
 	ProxyIdleTimeoutSeconds int
 
@@ -289,6 +297,7 @@ func (c *OperatorConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	c.LeaderElectionRetryPeriod = vp.GetDuration(LeaderElectionRetryPeriod)
 	c.LeaderElectionResourceLockTimeout = vp.GetDuration(LeaderElectionResourceLockTimeout)
 	c.EnableGatewayAPI = vp.GetBool(EnableGatewayAPI)
+	c.EnableGatewayAPIExtensionRefFilters = vp.GetBool(EnableGatewayAPIExtensionRefFilters)
 	c.ProxyIdleTimeoutSeconds = vp.GetInt(ProxyIdleTimeoutSeconds)
 	if c.ProxyIdleTimeoutSeconds == 0 {
 		c.ProxyIdleTimeoutSeconds = DefaultProxyIdleTimeoutSeconds

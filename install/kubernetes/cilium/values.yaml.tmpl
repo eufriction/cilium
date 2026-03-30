@@ -1084,6 +1084,8 @@ gatewayAPI:
   enabled: false
   # -- Enable proxy protocol for all GatewayAPI listeners. Note that _only_ Proxy protocol traffic will be accepted once this is enabled.
   enableProxyProtocol: false
+  # -- Enable support for Gateway API HTTPRoute ExtensionRef filters backed by CiliumEnvoyHTTPFilter custom resources.
+  enableExtensionRefFilters: false
   # -- Enable Backend Protocol selection support (GEP-1911) for Gateway API via appProtocol.
   enableAppProtocol: false
   # -- Enable ALPN for all listeners configured with Gateway API. ALPN will attempt HTTP/2, then HTTP 1.1.
