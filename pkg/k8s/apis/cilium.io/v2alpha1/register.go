@@ -100,6 +100,11 @@ const (
 	CGCCListName       = "ciliumgatewayclassconfiglists"
 	CGCCKindDefinition = "CiliumGatewayClassConfig"
 	CGCCName           = CGCCPluralName + "." + CustomResourceDefinitionGroup
+
+	// CiliumEnvoyHTTPFilter (CEHF)
+	CEHFPluralName     = "ciliumenvoyhttpfilters"
+	CEHFKindDefinition = "CiliumEnvoyHTTPFilter"
+	CEHFName           = CEHFPluralName + "." + CustomResourceDefinitionGroup
 )
 
 // SchemeGroupVersion is group version used to register these objects
@@ -169,6 +174,10 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		// new Gateway API types
 		&CiliumGatewayClassConfig{},
 		&CiliumGatewayClassConfigList{},
+
+		// CiliumEnvoyHTTPFilter for Gateway API ExtensionRef
+		&CiliumEnvoyHTTPFilter{},
+		&CiliumEnvoyHTTPFilterList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
