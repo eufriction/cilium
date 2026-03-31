@@ -154,8 +154,16 @@ func (r *gatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			" At a future date this annotation will be removed if no spec.addresses are set.", gw.GetNamespace(), gw.GetName(), annotation.LBIPAMIPKeyAlias))
 	}
 
+	cehfList := &v2alpha1.CiliumEnvoyHTTPFilterList{}
+	if r.operatorConfig.EnableGatewayAPIExtensionRefFilters {
+		if err := r.Client.List(ctx, cehfList); err != nil {
+			scopedLog.ErrorContext(ctx, "Unable to list CiliumEnvoyHTTPFilters", logfields.Error, err)
+			return r.handleReconcileErrorWithStatus(ctx, err, original, gw)
+		}
+	}
+
 	// Run the HTTPRoute route checks here and update the status accordingly.
-	if err := r.setHTTPRouteStatuses(scopedLog, ctx, httpRouteList, grants); err != nil {
+	if err := r.setHTTPRouteStatuses(scopedLog, ctx, httpRouteList, grants, cehfList.Items); err != nil {
 		scopedLog.ErrorContext(ctx, "Unable to update HTTPRoute Status", logfields.Error, err)
 		return controllerruntime.Fail(err)
 	}
@@ -181,14 +189,6 @@ func (r *gatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.setBackendTLSPolicyStatuses(scopedLog, ctx, httpRoutes, btlspMap, req.NamespacedName); err != nil {
 		scopedLog.ErrorContext(ctx, "Unable to update BackendTLSPolicy Status", logfields.Error, err)
 		return controllerruntime.Fail(err)
-	}
-
-	cehfList := &v2alpha1.CiliumEnvoyHTTPFilterList{}
-	if r.operatorConfig.EnableGatewayAPIExtensionRefFilters {
-		if err := r.Client.List(ctx, cehfList); err != nil {
-			scopedLog.ErrorContext(ctx, "Unable to list CiliumEnvoyHTTPFilters", logfields.Error, err)
-			return r.handleReconcileErrorWithStatus(ctx, err, original, gw)
-		}
 	}
 
 	httpListeners, tlsPassthroughListeners := ingestion.GatewayAPI(scopedLog, ingestion.Input{
@@ -876,7 +876,7 @@ func (r *gatewayReconciler) parentIsMatchingGateway(parent gatewayv1.ParentRefer
 	return hasMatchingControllerFn(gw)
 }
 
-func (r *gatewayReconciler) setHTTPRouteStatuses(scopedLog *slog.Logger, ctx context.Context, httpRoutes *gatewayv1.HTTPRouteList, grants *gatewayv1beta1.ReferenceGrantList) error {
+func (r *gatewayReconciler) setHTTPRouteStatuses(scopedLog *slog.Logger, ctx context.Context, httpRoutes *gatewayv1.HTTPRouteList, grants *gatewayv1beta1.ReferenceGrantList, cehfs []v2alpha1.CiliumEnvoyHTTPFilter) error {
 	scopedLog.DebugContext(ctx, "Updating HTTPRoute statuses for Gateway", numRoutes, len(httpRoutes.Items))
 	for httpRouteIndex, original := range httpRoutes.Items {
 
@@ -897,6 +897,7 @@ func (r *gatewayReconciler) setHTTPRouteStatuses(scopedLog *slog.Logger, ctx con
 		}
 
 		// Route-specific checks will go in here separately if required.
+		r.checkExtensionRefStatus(i, hr, cehfs)
 
 		// Validate the HTTPRoute header name
 		if err := i.ValidateHeaderModifier(); err != nil {

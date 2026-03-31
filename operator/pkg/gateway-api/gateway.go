@@ -33,6 +33,7 @@ import (
 	"github.com/cilium/cilium/operator/pkg/gateway-api/indexers"
 	"github.com/cilium/cilium/operator/pkg/model/translation"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
@@ -171,6 +172,11 @@ func (r *gatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if serviceImportEnabled {
 		// Watch for changes to Backend Service Imports
 		gatewayBuilder = gatewayBuilder.Watches(&mcsapiv1alpha1.ServiceImport{}, r.enqueueRequestForBackendServiceImport())
+	}
+
+	if r.operatorConfig.EnableGatewayAPIExtensionRefFilters {
+		// Watch for changes to CiliumEnvoyHTTPFilter resources referenced via ExtensionRef
+		gatewayBuilder = gatewayBuilder.Watches(&v2alpha1.CiliumEnvoyHTTPFilter{}, handler.EnqueueRequestsFromMapFunc(r.enqueueAll()))
 	}
 
 	return gatewayBuilder.Complete(r)
