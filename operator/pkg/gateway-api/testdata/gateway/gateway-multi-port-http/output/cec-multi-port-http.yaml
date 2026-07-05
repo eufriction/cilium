@@ -1,0 +1,170 @@
+metadata:
+  annotations:
+    cec.cilium.io/use-original-source-address: "false"
+  labels:
+    gateway.networking.k8s.io/gateway-name: multi-port-http
+  name: cilium-gateway-multi-port-http
+  namespace: gateway-conformance-infra
+  ownerReferences:
+    - apiVersion: gateway.networking.k8s.io/v1
+      controller: true
+      kind: Gateway
+      name: multi-port-http
+      uid: ""
+  resourceVersion: "1"
+spec:
+  backendServices:
+    - name: infra-backend-v1
+      namespace: gateway-conformance-infra
+      number:
+        - "8080"
+    - name: infra-backend-v2
+      namespace: gateway-conformance-infra
+      number:
+        - "8080"
+  resources:
+    - "@type": type.googleapis.com/envoy.config.listener.v3.Listener
+      address:
+        socketAddress:
+          address: 0.0.0.0
+          portValue: 80
+      filterChains:
+        - filterChainMatch:
+            serverNames:
+              - "*.example.test"
+            transportProtocol: raw_buffer
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typedConfig:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                accessLog:
+                  - name: envoy.access_loggers.file
+                    typedConfig:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                      logFormat:
+                        textFormat: "[%START_TIME%] %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %REQ(:AUTHORITY)% %UPSTREAM_TRANSPORT_FAILURE_REASON%\n"
+                      path: /var/log/envoy/access.log
+                commonHttpProtocolOptions:
+                  maxStreamDuration: 0s
+                httpFilters:
+                  - name: envoy.filters.http.router
+                    typedConfig:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                internalAddressConfig: {}
+                normalizePath: true
+                pathWithEscapedSlashesAction: UnescapeAndRedirect
+                requestTimeout: 0s
+                statPrefix: listener-80
+                stripAnyHostPort: true
+                useRemoteAddress: true
+                xffNumTrustedHops: 0
+      listenerFilters:
+        - name: envoy.filters.listener.tls_inspector
+          typedConfig:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+      listenerFiltersTimeout: 0s
+      name: listener-80
+      trafficDirection: OUTBOUND
+    - "@type": type.googleapis.com/envoy.config.listener.v3.Listener
+      address:
+        socketAddress:
+          address: 0.0.0.0
+          portValue: 8080
+      filterChains:
+        - filterChainMatch:
+            serverNames:
+              - "*.example.test"
+            transportProtocol: raw_buffer
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typedConfig:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                accessLog:
+                  - name: envoy.access_loggers.file
+                    typedConfig:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                      logFormat:
+                        textFormat: "[%START_TIME%] %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %REQ(:AUTHORITY)% %UPSTREAM_TRANSPORT_FAILURE_REASON%\n"
+                      path: /var/log/envoy/access.log
+                commonHttpProtocolOptions:
+                  maxStreamDuration: 0s
+                httpFilters:
+                  - name: envoy.filters.http.router
+                    typedConfig:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                internalAddressConfig: {}
+                normalizePath: true
+                pathWithEscapedSlashesAction: UnescapeAndRedirect
+                requestTimeout: 0s
+                statPrefix: listener-8080
+                stripAnyHostPort: true
+                useRemoteAddress: true
+                xffNumTrustedHops: 0
+      listenerFilters:
+        - name: envoy.filters.listener.tls_inspector
+          typedConfig:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+      listenerFiltersTimeout: 0s
+      name: listener-8080
+      trafficDirection: OUTBOUND
+    - "@type": type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+      name: listener-80
+      virtualHosts:
+        - domains:
+            - api.example.test
+          name: api.example.test:80
+          routes:
+            - match:
+                caseSensitive: true
+                path: /web
+                prefixRewrite: /web
+              name: http-route-80
+              route:
+                cluster: infra-backend-v1:8080
+                maxStreamDuration: 0s
+                timeout: 0s
+    - "@type": type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+      name: listener-8080
+      virtualHosts:
+        - domains:
+            - api.example.test
+          name: api.example.test:8080
+          routes:
+            - match:
+                caseSensitive: true
+                path: /api
+                prefixRewrite: /api
+              name: http-route-8080
+              route:
+                cluster: infra-backend-v2:8080
+                maxStreamDuration: 0s
+                timeout: 0s
+    - "@type": type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment
+      clusterName: infra-backend-v1:8080
+      endpoints:
+        - lbEndpoints:
+            - endpoint:
+                address:
+                  socketAddress:
+                    address: 172.18.255.200
+                    portValue: 8080
+      policy:
+        overloadPolicy: USE_DOWNSTREAM_PROTOCOL
+    - "@type": type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment
+      clusterName: infra-backend-v2:8080
+      endpoints:
+        - lbEndpoints:
+            - endpoint:
+                address:
+                  socketAddress:
+                    address: 172.18.255.200
+                    portValue: 8080
+      policy:
+        overloadPolicy: USE_DOWNSTREAM_PROTOCOL
+  status:
+    conditions:
+      - lastTransitionTime: null
+        message: ""
+        reason: ""
+        status: "True"
+        type: Available
