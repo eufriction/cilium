@@ -274,6 +274,28 @@ func TestSharedIngressTranslator_getServices(t *testing.T) {
 			},
 		},
 		{
+			name: "multi-port plain HTTP (Gateway API)",
+			fields: fields{
+				name:      "cilium-ingress",
+				namespace: "default",
+			},
+			model: multiPortPlainHTTPModel,
+			want: []*ciliumv2.ServiceListener{
+				{
+					Name:      "cilium-ingress",
+					Namespace: "default",
+					Ports:     []uint16{80},
+					Listener:  "listener-80",
+				},
+				{
+					Name:      "cilium-ingress",
+					Namespace: "default",
+					Ports:     []uint16{8080},
+					Listener:  "listener-8080",
+				},
+			},
+		},
+		{
 			name: "catch-all HTTPS with multi-port TLS passthrough",
 			fields: fields{
 				name:      "cilium-ingress",

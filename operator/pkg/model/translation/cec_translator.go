@@ -192,7 +192,7 @@ func (i *cecTranslator) desiredServicesWithPortsCombined(namespace string, name 
 }
 
 // desiredServicesWithPortsSplit returns per-port ServiceListeners for HTTPS and
-// TLS passthrough, plus one shared entry for plaintext HTTP ports.
+// TLS passthrough, plus per-port entries for plain HTTP when needed.
 func (i *cecTranslator) desiredServicesWithPortsSplit(namespace string, name string, m *model.Model) ([]*ciliumv2.ServiceListener, error) {
 	shortenedName := shortener.ShortenK8sResourceName(name)
 	var result []*ciliumv2.ServiceListener
@@ -205,21 +205,34 @@ func (i *cecTranslator) desiredServicesWithPortsSplit(namespace string, name str
 	}
 
 	// Plaintext HTTP ports.
-	var httpPorts []uint16
-	for _, hl := range m.HTTP {
-		if len(hl.TLS) == 0 && !tlsPassthroughPorts[hl.Port] {
-			httpPorts = append(httpPorts, uint16(hl.Port))
+	if m.NeedsPerPortHTTPListeners() {
+		// One entry per plain HTTP port.
+		for _, port := range m.HTTPPlainPortsSorted() {
+			envoyListenerName := listenerNameForPort(port)
+			result = append(result, &ciliumv2.ServiceListener{
+				Namespace: namespace,
+				Name:      shortenedName,
+				Ports:     []uint16{uint16(port)},
+				Listener:  envoyListenerName,
+			})
 		}
-	}
-	goslices.Sort(httpPorts)
-	httpPorts = goslices.Compact(httpPorts)
-	if len(httpPorts) > 0 {
-		result = append(result, &ciliumv2.ServiceListener{
-			Namespace: namespace,
-			Name:      shortenedName,
-			Ports:     httpPorts,
-			Listener:  listenerName,
-		})
+	} else {
+		var httpPorts []uint16
+		for _, hl := range m.HTTP {
+			if len(hl.TLS) == 0 && !tlsPassthroughPorts[hl.Port] {
+				httpPorts = append(httpPorts, uint16(hl.Port))
+			}
+		}
+		goslices.Sort(httpPorts)
+		httpPorts = goslices.Compact(httpPorts)
+		if len(httpPorts) > 0 {
+			result = append(result, &ciliumv2.ServiceListener{
+				Namespace: namespace,
+				Name:      shortenedName,
+				Ports:     httpPorts,
+				Listener:  listenerName,
+			})
+		}
 	}
 
 	// One entry per HTTPS port.
