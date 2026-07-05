@@ -9,6 +9,7 @@ import (
 	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_config_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	envoy_extensions_filters_network_hcm_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	httpConnectionManagerv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_extensions_filters_network_tcp_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
@@ -816,6 +817,48 @@ func TestDesiredEnvoyListenerPerPort(t *testing.T) {
 	hcm2 := decodeHCM(l2.FilterChains[0])
 	require.Equal(t, "listener-50051", hcm2.GetRds().GetRouteConfigName())
 	require.Equal(t, tlsTransportSocketType, l2.FilterChains[0].TransportSocket.Name)
+}
+
+func TestDesiredEnvoyListenerPerPortPlainHTTP(t *testing.T) {
+	i := &cecTranslator{
+		Config: Config{
+			SecretsNamespace: "cilium-secrets",
+		},
+	}
+
+	res, err := i.desiredEnvoyListener(multiPortPlainHTTPModel)
+	require.NoError(t, err)
+	require.Len(t, res, 2, "expected 2 Envoy Listeners: listener-80, listener-8080")
+
+	decodeListener := func(r ciliumv2.XDSResource) *envoy_config_listener.Listener {
+		l := &envoy_config_listener.Listener{}
+		require.NoError(t, proto.Unmarshal(r.Value, l))
+		return l
+	}
+	decodeHCM := func(fc *envoy_config_listener.FilterChain) *httpConnectionManagerv3.HttpConnectionManager {
+		require.Len(t, fc.Filters, 1)
+		hcm := &httpConnectionManagerv3.HttpConnectionManager{}
+		require.NoError(t, proto.Unmarshal(fc.Filters[0].GetTypedConfig().GetValue(), hcm))
+		return hcm
+	}
+
+	// port 80
+	l0 := decodeListener(res[0])
+	require.Equal(t, "listener-80", l0.Name)
+	require.Len(t, l0.FilterChains, 1, "HTTP listener-80: one filter chain")
+	require.Equal(t, rawBufferTransportProtocol, l0.FilterChains[0].FilterChainMatch.TransportProtocol)
+	hcm0 := decodeHCM(l0.FilterChains[0])
+	require.Equal(t, "listener-80", hcm0.StatPrefix)
+	require.Equal(t, "listener-80", hcm0.GetRds().GetRouteConfigName())
+
+	// port 8080
+	l1 := decodeListener(res[1])
+	require.Equal(t, "listener-8080", l1.Name)
+	require.Len(t, l1.FilterChains, 1, "HTTP listener-8080: one filter chain")
+	require.Equal(t, rawBufferTransportProtocol, l1.FilterChains[0].FilterChainMatch.TransportProtocol)
+	hcm1 := decodeHCM(l1.FilterChains[0])
+	require.Equal(t, "listener-8080", hcm1.StatPrefix)
+	require.Equal(t, "listener-8080", hcm1.GetRds().GetRouteConfigName())
 }
 
 func TestDesiredEnvoyListenerCatchAllHTTPSWithMultiPortTLSPassthrough(t *testing.T) {

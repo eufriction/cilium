@@ -1384,6 +1384,51 @@ var multiPortHTTPSModel = &model.Model{
 	},
 }
 
+// multiPortPlainHTTPModel represents a Gateway with plain HTTP on two different
+// ports (80 and 8080), triggering per-port listener splitting for HTTP.
+var multiPortPlainHTTPModel = &model.Model{
+	HTTP: []model.HTTPListener{
+		{
+			Sources: []model.FullyQualifiedResource{
+				{Name: "my-gateway", Namespace: "default", Version: "v1", Kind: "Gateway"},
+			},
+			Port:     80,
+			Hostname: "example.com",
+			Routes: []model.HTTPRoute{
+				{
+					PathMatch: model.StringMatch{Prefix: "/"},
+					Backends: []model.Backend{
+						{
+							Name:      "http-backend-a",
+							Namespace: "default",
+							Port:      &model.BackendPort{Port: 8080},
+						},
+					},
+				},
+			},
+		},
+		{
+			Sources: []model.FullyQualifiedResource{
+				{Name: "my-gateway", Namespace: "default", Version: "v1", Kind: "Gateway"},
+			},
+			Port:     8080,
+			Hostname: "example.com",
+			Routes: []model.HTTPRoute{
+				{
+					PathMatch: model.StringMatch{Prefix: "/"},
+					Backends: []model.Backend{
+						{
+							Name:      "http-backend-b",
+							Namespace: "default",
+							Port:      &model.BackendPort{Port: 9090},
+						},
+					},
+				},
+			},
+		},
+	},
+}
+
 // multiPortHTTPSExpectedRouteConfigs is the expected route configuration for
 // multiPortHTTPSModel: one RouteConfiguration per listener.
 var multiPortHTTPSExpectedRouteConfigs = []*envoy_config_route_v3.RouteConfiguration{

@@ -359,6 +359,7 @@ func (i *cecTranslator) desiredEnvoyListenerPerPort(m *model.Model) ([]ciliumv2.
 	var allResources []ciliumv2.XDSResource
 
 	needsPerPortTLS := m.NeedsPerPortTLSPassthroughListeners()
+	needsPerPortHTTP := m.NeedsPerPortHTTPListeners()
 
 	// All TLS passthrough ports are excluded from the base insecure listener
 	// port list, since they are handled by their own section (either per-port
@@ -378,7 +379,39 @@ func (i *cecTranslator) desiredEnvoyListenerPerPort(m *model.Model) ([]ciliumv2.
 
 	hasTLSPassthroughForBase := !needsPerPortTLS && m.IsTLSPassthroughListenerConfigured()
 
-	if hasInsecure || hasTLSPassthroughForBase {
+	// One Listener per plain HTTP port when per-port HTTP is needed.
+	if needsPerPortHTTP {
+		for _, port := range m.HTTPPlainPortsSorted() {
+			lName := listenerNameForPort(port)
+			// Use the listener name as route name for RDS lookup
+
+			httpFC, err := i.httpFilterChainForPort(lName, lName, port, m)
+			if err != nil {
+				return nil, err
+			}
+
+			httpListener := &envoy_config_listener.Listener{
+				Name:         lName,
+				FilterChains: []*envoy_config_listener.FilterChain{httpFC},
+				ListenerFilters: []*envoy_config_listener.ListenerFilter{
+					{
+						Name: tlsInspectorType,
+						ConfigType: &envoy_config_listener.ListenerFilter_TypedConfig{
+							TypedConfig: toAny(&envoy_extensions_listener_tls_inspector_v3.TlsInspector{}),
+						},
+					},
+				},
+			}
+			for _, fn := range i.listenerMutatorsForPorts(m, []uint32{port}) {
+				httpListener = fn(httpListener)
+			}
+			res, err := toXdsResource(httpListener, envoy.ListenerTypeURL)
+			if err != nil {
+				return nil, err
+			}
+			allResources = append(allResources, res)
+		}
+	} else if hasInsecure || hasTLSPassthroughForBase {
 		var filterChains []*envoy_config_listener.FilterChain
 
 		if hasInsecure {
@@ -552,6 +585,32 @@ func (i *cecTranslator) httpFilterChain(name string, m *model.Model) (*envoy_con
 				Name: httpConnectionManagerType,
 				ConfigType: &envoy_config_listener.Filter_TypedConfig{
 					TypedConfig: insecureHttpConnectionManager.Any,
+				},
+			},
+		},
+	}, nil
+}
+
+// httpFilterChainForPort returns the HTTP filter chain for the given port.
+// The routeName parameter should match the RouteConfiguration name for RDS lookups.
+func (i *cecTranslator) httpFilterChainForPort(name, routeName string, port uint32, m *model.Model) (*envoy_config_listener.FilterChain, error) {
+	httpConnectionManagerName := fmt.Sprintf("%s", name)
+	httpConnectionManager, err := i.desiredHTTPConnectionManager(
+		httpConnectionManagerName,
+		routeName,
+		m,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &envoy_config_listener.FilterChain{
+		FilterChainMatch: &envoy_config_listener.FilterChainMatch{TransportProtocol: rawBufferTransportProtocol},
+		Filters: []*envoy_config_listener.Filter{
+			{
+				Name: httpConnectionManagerType,
+				ConfigType: &envoy_config_listener.Filter_TypedConfig{
+					TypedConfig: httpConnectionManager.Any,
 				},
 			},
 		},
