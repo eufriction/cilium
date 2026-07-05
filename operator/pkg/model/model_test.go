@@ -701,6 +701,202 @@ func TestNeedsCrossProtocolSplit(t *testing.T) {
 	}
 }
 
+func TestHTTPPlainPortsSorted(t *testing.T) {
+	tests := []struct {
+		name  string
+		model Model
+		want  []uint32
+	}{
+		{
+			name:  "empty model",
+			model: Model{},
+			want:  nil,
+		},
+		{
+			name: "no plain HTTP listeners",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+					{Port: 8443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "single plain HTTP port",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80},
+				},
+			},
+			want: []uint32{80},
+		},
+		{
+			name: "two plain HTTP ports sorted",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 8080},
+					{Port: 80},
+				},
+			},
+			want: []uint32{80, 8080},
+		},
+		{
+			name: "mixed HTTP and HTTPS",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80},
+					{Port: 443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+					{Port: 8080},
+					{Port: 50051, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+				},
+			},
+			want: []uint32{80, 8080},
+		},
+		{
+			name: "duplicate plain HTTP ports deduplicated",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80, Hostname: "a.com"},
+					{Port: 80, Hostname: "b.com"},
+				},
+			},
+			want: []uint32{80},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.model.HTTPPlainPortsSorted())
+		})
+	}
+}
+
+func TestNeedsPerPortHTTPListeners(t *testing.T) {
+	tests := []struct {
+		name  string
+		model Model
+		want  bool
+	}{
+		{
+			name:  "empty model",
+			model: Model{},
+			want:  false,
+		},
+		{
+			name: "one plain HTTP port",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "two plain HTTP ports",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80},
+					{Port: 8080},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "HTTPS only",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+					{Port: 8443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+				},
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.model.NeedsPerPortHTTPListeners())
+		})
+	}
+}
+
+func TestNeedsPerPortListeners(t *testing.T) {
+	tests := []struct {
+		name  string
+		model Model
+		want  bool
+	}{
+		{
+			name:  "empty model",
+			model: Model{},
+			want:  false,
+		},
+		{
+			name: "single HTTPS port",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "two HTTPS ports",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+					{Port: 8443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "single plain HTTP port",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "two plain HTTP ports",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80},
+					{Port: 8080},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "single HTTPS and single plain HTTP",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80},
+					{Port: 443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "two plain HTTP ports with HTTPS",
+			model: Model{
+				HTTP: []HTTPListener{
+					{Port: 80},
+					{Port: 8080},
+					{Port: 443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+				},
+			},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.model.NeedsPerPortListeners())
+		})
+	}
+}
+
 func TestIsHTTPSPortConfigured(t *testing.T) {
 	m := Model{
 		HTTP: []HTTPListener{
@@ -713,6 +909,20 @@ func TestIsHTTPSPortConfigured(t *testing.T) {
 	assert.True(t, m.IsHTTPSPortConfigured(50051))
 	assert.False(t, m.IsHTTPSPortConfigured(80))
 	assert.False(t, m.IsHTTPSPortConfigured(9999))
+}
+
+func TestIsHTTPPlainPortConfigured(t *testing.T) {
+	m := Model{
+		HTTP: []HTTPListener{
+			{Port: 80},
+			{Port: 8080},
+			{Port: 443, TLS: []TLSSecret{{Name: "cert", Namespace: "ns"}}},
+		},
+	}
+	assert.True(t, m.IsHTTPPlainPortConfigured(80))
+	assert.True(t, m.IsHTTPPlainPortConfigured(8080))
+	assert.False(t, m.IsHTTPPlainPortConfigured(443))
+	assert.False(t, m.IsHTTPPlainPortConfigured(9999))
 }
 
 func TestTLSSecretsToListeners(t *testing.T) {

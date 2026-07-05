@@ -762,6 +762,17 @@ func (m *Model) IsHTTPSPortConfigured(port uint32) bool {
 	return false
 }
 
+// IsHTTPPlainPortConfigured returns true if the model contains a plain HTTP listener
+// on the given port number.
+func (m *Model) IsHTTPPlainPortConfigured(port uint32) bool {
+	for _, l := range m.HTTP {
+		if len(l.TLS) == 0 && l.Port == port {
+			return true
+		}
+	}
+	return false
+}
+
 // HTTPSPortsSorted returns sorted, unique ports for all HTTPS listeners.
 func (m *Model) HTTPSPortsSorted() []uint32 {
 	var ports []uint32
@@ -783,11 +794,32 @@ func (m *Model) NeedsPerPortTLSPassthroughListeners() bool {
 	return len(m.TLSPassthroughPorts()) > 1
 }
 
+// HTTPPlainPortsSorted returns sorted, unique ports for plain HTTP listeners
+// (HTTP listeners without TLS termination).
+func (m *Model) HTTPPlainPortsSorted() []uint32 {
+	var ports []uint32
+	for _, l := range m.HTTP {
+		if len(l.TLS) == 0 {
+			ports = append(ports, l.Port)
+		}
+	}
+	return slices.SortedUnique(ports)
+}
+
+// NeedsPerPortHTTPListeners returns true when the model has more than one
+// distinct plain HTTP port.
+func (m *Model) NeedsPerPortHTTPListeners() bool {
+	return len(m.HTTPPlainPortsSorted()) > 1
+}
+
 // NeedsPerPortListeners returns true if any protocol has enough distinct ports
 // to require per-port Envoy Listener resources, or if cross-protocol SNI overlap
 // would make a combined listener lose the Gateway listener port boundary.
 func (m *Model) NeedsPerPortListeners() bool {
-	return m.NeedsPerPortHTTPSListeners() || m.NeedsPerPortTLSPassthroughListeners() || m.NeedsCrossProtocolSplit()
+	return m.NeedsPerPortHTTPSListeners() ||
+		m.NeedsPerPortTLSPassthroughListeners() ||
+		m.NeedsPerPortHTTPListeners() ||
+		m.NeedsCrossProtocolSplit()
 }
 
 // NeedsCrossProtocolSplit returns true when HTTPS and TLS passthrough filter
