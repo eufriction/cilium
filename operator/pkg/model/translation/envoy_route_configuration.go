@@ -42,6 +42,12 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 				} else {
 					port = secureHost
 				}
+			} else {
+				if m.NeedsPerPortHTTPListeners() {
+					port = fmt.Sprintf("%d", l.Port)
+				} else {
+					port = insecureHost
+				}
 			}
 
 			if len(r.Hostnames) == 0 {
@@ -78,8 +84,16 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 	goslices.Sort(allPorts)
 
 	// Also emit an empty RouteConfiguration for configured ports with no routes.
-	if !goslices.Contains(allPorts, insecureHost) && m.IsHTTPListenerConfigured() {
-		allPorts = append([]string{insecureHost}, allPorts...)
+	if !m.NeedsPerPortHTTPListeners() {
+		if !goslices.Contains(allPorts, insecureHost) && m.IsHTTPListenerConfigured() {
+			allPorts = append([]string{insecureHost}, allPorts...)
+		}
+	} else {
+		for _, httpPort := range httpPlainPortKeys(m) {
+			if !goslices.Contains(allPorts, httpPort) {
+				allPorts = append(allPorts, httpPort)
+			}
+		}
 	}
 	for _, httpsPort := range httpsPortKeys(m) {
 		if !goslices.Contains(allPorts, httpsPort) {
@@ -113,6 +127,11 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 				if !m.IsHTTPSListenerConfigured() {
 					continue
 				}
+			} else if m.NeedsPerPortHTTPListeners() {
+				// per-port HTTP mode: skip if no HTTP listener uses this port.
+				if !m.IsHTTPPlainPortConfigured(parseUint32(port)) {
+					continue
+				}
 			} else {
 				// per-port mode: skip if no HTTPS listener uses this port.
 				if !m.IsHTTPSPortConfigured(parseUint32(port)) {
@@ -130,7 +149,9 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 
 		redirectedHost := map[string]struct{}{}
 		// Add HTTPS redirect virtual hosts across all configured HTTPS ports.
-		if port == insecureHost {
+		// In per-port HTTP mode, emit redirects for each plain HTTP port that has
+		// routes from a listener with ForceHTTPtoHTTPSRedirect = true.
+		if port == insecureHost || m.NeedsPerPortHTTPListeners() {
 			for _, httpsPort := range httpsPortKeys(m) {
 				for _, h := range slices.Unique(portHostNameRedirect[httpsPort]) {
 					if h.redirect {
@@ -191,6 +212,29 @@ func httpsPortKeys(m *model.Model) []string {
 	seen := map[string]struct{}{}
 	for _, l := range m.HTTP {
 		if len(l.TLS) > 0 {
+			seen[fmt.Sprintf("%d", l.Port)] = struct{}{}
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	goslices.Sort(keys)
+	return keys
+}
+
+// httpPlainPortKeys returns sorted, unique port strings for all plain HTTP listeners in the model.
+func httpPlainPortKeys(m *model.Model) []string {
+	if !m.NeedsPerPortHTTPListeners() {
+		// No per-port splitting needed: use the legacy "insecure" key for plain HTTP.
+		if m.IsHTTPListenerConfigured() {
+			return []string{insecureHost}
+		}
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, l := range m.HTTP {
+		if len(l.TLS) == 0 {
 			seen[fmt.Sprintf("%d", l.Port)] = struct{}{}
 		}
 	}
