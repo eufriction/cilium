@@ -784,16 +784,6 @@ func (m *Model) HTTPSPortsSorted() []uint32 {
 	return slices.SortedUnique(ports)
 }
 
-// NeedsPerPortHTTPSListeners returns true if the model has more than one distinct HTTPS port.
-func (m *Model) NeedsPerPortHTTPSListeners() bool {
-	return len(m.HTTPSPortsSorted()) > 1
-}
-
-// NeedsPerPortTLSPassthroughListeners returns true if the model has more than one distinct TLS passthrough port.
-func (m *Model) NeedsPerPortTLSPassthroughListeners() bool {
-	return len(m.TLSPassthroughPorts()) > 1
-}
-
 // HTTPPlainPortsSorted returns sorted, unique ports for plain HTTP listeners
 // (HTTP listeners without TLS termination).
 func (m *Model) HTTPPlainPortsSorted() []uint32 {
@@ -804,100 +794,6 @@ func (m *Model) HTTPPlainPortsSorted() []uint32 {
 		}
 	}
 	return slices.SortedUnique(ports)
-}
-
-// NeedsPerPortHTTPListeners returns true when the model has more than one
-// distinct plain HTTP port.
-func (m *Model) NeedsPerPortHTTPListeners() bool {
-	return len(m.HTTPPlainPortsSorted()) > 1
-}
-
-// NeedsPerPortListeners returns true if any protocol has enough distinct ports
-// to require per-port Envoy Listener resources, or if cross-protocol SNI overlap
-// would make a combined listener lose the Gateway listener port boundary.
-func (m *Model) NeedsPerPortListeners() bool {
-	return m.NeedsPerPortHTTPSListeners() ||
-		m.NeedsPerPortTLSPassthroughListeners() ||
-		m.NeedsPerPortHTTPListeners() ||
-		m.NeedsCrossProtocolSplit()
-}
-
-// NeedsCrossProtocolSplit returns true when HTTPS and TLS passthrough filter
-// chains on different Gateway listener ports cannot safely share a combined
-// Envoy listener.
-//
-// Filter chains from different Gateway listener ports must not share any SNI
-// match because a combined Envoy listener would otherwise erase the original
-// Gateway listener port boundary and route traffic for one listener to another.
-// Same-port HTTPS and TLS passthrough conflicts cannot be fixed by per-port
-// listeners and need to be rejected before translation.
-func (m *Model) NeedsCrossProtocolSplit() bool {
-	for _, httpsMatch := range m.httpsFilterChainMatches() {
-		for _, tlsMatch := range m.tlsPassthroughFilterChainMatches() {
-			if httpsMatch.port == tlsMatch.port {
-				continue
-			}
-			if sniHostnamesIntersect(httpsMatch.hostname, tlsMatch.hostname) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-type filterChainMatch struct {
-	hostname string
-	port     uint32
-}
-
-// httpsFilterChainMatches returns the normalized hostnames and ports that HTTPS
-// filter chains will use for SNI matching. Each HTTPS filter chain's ServerNames
-// derive from the listener-level hostname.
-func (m *Model) httpsFilterChainMatches() []filterChainMatch {
-	var matches []filterChainMatch
-	seen := map[filterChainMatch]struct{}{}
-	for _, l := range m.HTTP {
-		if len(l.TLS) == 0 {
-			continue
-		}
-		match := filterChainMatch{hostname: normalizeHostname(l.Hostname), port: l.Port}
-		if _, ok := seen[match]; ok {
-			continue
-		}
-		seen[match] = struct{}{}
-		matches = append(matches, match)
-	}
-	return matches
-}
-
-// tlsPassthroughFilterChainMatches returns the normalized hostnames and ports
-// that TLS passthrough filter chains will use for SNI matching. These derive
-// from route hostnames because each TLS passthrough route generates its own
-// filter chain.
-func (m *Model) tlsPassthroughFilterChainMatches() []filterChainMatch {
-	var matches []filterChainMatch
-	seen := map[filterChainMatch]struct{}{}
-	for _, l := range m.TLSPassthrough {
-		for _, r := range l.Routes {
-			if len(r.Hostnames) == 0 {
-				match := filterChainMatch{hostname: allHosts, port: l.Port}
-				if _, ok := seen[match]; !ok {
-					seen[match] = struct{}{}
-					matches = append(matches, match)
-				}
-				continue
-			}
-			for _, h := range r.Hostnames {
-				match := filterChainMatch{hostname: normalizeHostname(h), port: l.Port}
-				if _, ok := seen[match]; ok {
-					continue
-				}
-				seen[match] = struct{}{}
-				matches = append(matches, match)
-			}
-		}
-	}
-	return matches
 }
 
 // IsTLSPassthroughListenerConfigured returns true if the model has any TLS Passthrough listeners.

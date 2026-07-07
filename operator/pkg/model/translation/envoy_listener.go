@@ -6,7 +6,6 @@ package translation
 import (
 	"cmp"
 	"fmt"
-	"maps"
 	goslices "slices"
 	"strings"
 	"syscall"
@@ -244,113 +243,12 @@ func withSocketOption(tcpKeepAlive, tcpKeepIdleInSeconds, tcpKeepAliveProbeInter
 }
 
 // desiredEnvoyListener returns the desired Envoy listeners for the given model.
-// When the model has multiple distinct HTTPS ports, one Listener is emitted per
-// HTTPS port; otherwise a single combined Listener is returned.
+// One Listener is emitted per distinct port.
 func (i *cecTranslator) desiredEnvoyListener(m *model.Model) ([]ciliumv2.XDSResource, error) {
 	if m.IsEmpty() {
 		return nil, nil
 	}
-
-	if m.NeedsPerPortListeners() {
-		return i.desiredEnvoyListenerPerPort(m)
-	}
-	return i.desiredEnvoyListenerCombined(m)
-}
-
-// desiredEnvoyListenerCombined returns a single Listener with all filter chains combined.
-func (i *cecTranslator) desiredEnvoyListenerCombined(m *model.Model) ([]ciliumv2.XDSResource, error) {
-	filterChains, err := i.filterChains(listenerName, m)
-	if err != nil {
-		return nil, err
-	}
-
-	listener := &envoy_config_listener.Listener{
-		Name:         listenerName,
-		FilterChains: filterChains,
-		ListenerFilters: []*envoy_config_listener.ListenerFilter{
-			{
-				Name: tlsInspectorType,
-				ConfigType: &envoy_config_listener.ListenerFilter_TypedConfig{
-					TypedConfig: toAny(&envoy_extensions_listener_tls_inspector_v3.TlsInspector{}),
-				},
-			},
-		},
-	}
-
-	for _, fn := range i.listenerMutators(m) {
-		listener = fn(listener)
-	}
-
-	res, err := toXdsResource(listener, envoy.ListenerTypeURL)
-	if err != nil {
-		return nil, err
-	}
-	return []ciliumv2.XDSResource{res}, nil
-}
-
-// filterChains returns the filter chains for the given model.
-func (i *cecTranslator) filterChains(name string, m *model.Model) ([]*envoy_config_listener.FilterChain, error) {
-	var filterChains []*envoy_config_listener.FilterChain
-
-	if m.IsHTTPListenerConfigured() {
-		httpFilterChain, err := i.httpFilterChain(name, m)
-		if err != nil {
-			return nil, err
-		}
-		filterChains = append(filterChains, httpFilterChain)
-	}
-
-	if m.IsHTTPSListenerConfigured() {
-		httpsFC, err := i.httpsFilterChains(name, m)
-		if err != nil {
-			return nil, err
-		}
-		filterChains = append(filterChains, httpsFC...)
-	}
-
-	if m.IsTLSPassthroughListenerConfigured() {
-		filterChains = append(filterChains, tlsPassthroughFilterChains(m)...)
-	}
-
-	return filterChains, nil
-}
-
-// httpsFilterChains returns the HTTPS filter chains for the given model.
-func (i *cecTranslator) httpsFilterChains(name string, m *model.Model) ([]*envoy_config_listener.FilterChain, error) {
-	tlsToHostnames := m.TLSSecretsToHostnames()
-	if len(tlsToHostnames) == 0 {
-		return nil, nil
-	}
-
-	var filterChains []*envoy_config_listener.FilterChain
-
-	orderedSecrets := goslices.SortedStableFunc(maps.Keys(tlsToHostnames), func(a, b model.TLSSecret) int {
-		return cmp.Compare(a.Namespace+"/"+a.Name, b.Namespace+"/"+b.Name)
-	})
-
-	for _, secret := range orderedSecrets {
-		hostNames := tlsToHostnames[secret]
-
-		secureHCMName := fmt.Sprintf("%s-%s", name, secureHost)
-		secureHCM, err := i.desiredHTTPConnectionManager(secureHCMName, secureHCMName, m)
-		if err != nil {
-			return nil, err
-		}
-		filterChains = append(filterChains, &envoy_config_listener.FilterChain{
-			FilterChainMatch: toFilterChainMatch(hostNames),
-			Filters: []*envoy_config_listener.Filter{
-				{
-					Name: httpConnectionManagerType,
-					ConfigType: &envoy_config_listener.Filter_TypedConfig{
-						TypedConfig: secureHCM.Any,
-					},
-				},
-			},
-			TransportSocket: toTransportSocket(i.Config.SecretsNamespace, []model.TLSSecret{secret}),
-		})
-	}
-
-	return filterChains, nil
+	return i.desiredEnvoyListenerPerPort(m)
 }
 
 // desiredEnvoyListenerPerPort returns one Listener per distinct HTTPS port
@@ -358,77 +256,19 @@ func (i *cecTranslator) httpsFilterChains(name string, m *model.Model) ([]*envoy
 func (i *cecTranslator) desiredEnvoyListenerPerPort(m *model.Model) ([]ciliumv2.XDSResource, error) {
 	var allResources []ciliumv2.XDSResource
 
-	needsPerPortTLS := m.NeedsPerPortTLSPassthroughListeners()
-	needsPerPortHTTP := m.NeedsPerPortHTTPListeners()
+	// One Listener per plain HTTP port.
+	for _, port := range m.HTTPPlainPortsSorted() {
+		lName := listenerNameForPort(port)
+		// Use the listener name as route name for RDS lookup
 
-	// All TLS passthrough ports are excluded from the base insecure listener
-	// port list, since they are handled by their own section (either per-port
-	// listeners or a combined TLS passthrough block on the base listener).
-	tlsPassthroughPorts := map[uint32]bool{}
-	for _, p := range m.TLSPassthroughPorts() {
-		tlsPassthroughPorts[p] = true
-	}
-
-	hasInsecure := false
-	for _, l := range m.HTTP {
-		if len(l.TLS) == 0 && !tlsPassthroughPorts[l.Port] {
-			hasInsecure = true
-			break
-		}
-	}
-
-	hasTLSPassthroughForBase := !needsPerPortTLS && m.IsTLSPassthroughListenerConfigured()
-
-	// One Listener per plain HTTP port when per-port HTTP is needed.
-	if needsPerPortHTTP {
-		for _, port := range m.HTTPPlainPortsSorted() {
-			lName := listenerNameForPort(port)
-			// Use the listener name as route name for RDS lookup
-
-			httpFC, err := i.httpFilterChainForPort(lName, lName, port, m)
-			if err != nil {
-				return nil, err
-			}
-
-			httpListener := &envoy_config_listener.Listener{
-				Name:         lName,
-				FilterChains: []*envoy_config_listener.FilterChain{httpFC},
-				ListenerFilters: []*envoy_config_listener.ListenerFilter{
-					{
-						Name: tlsInspectorType,
-						ConfigType: &envoy_config_listener.ListenerFilter_TypedConfig{
-							TypedConfig: toAny(&envoy_extensions_listener_tls_inspector_v3.TlsInspector{}),
-						},
-					},
-				},
-			}
-			for _, fn := range i.listenerMutatorsForPorts(m, []uint32{port}) {
-				httpListener = fn(httpListener)
-			}
-			res, err := toXdsResource(httpListener, envoy.ListenerTypeURL)
-			if err != nil {
-				return nil, err
-			}
-			allResources = append(allResources, res)
-		}
-	} else if hasInsecure || hasTLSPassthroughForBase {
-		var filterChains []*envoy_config_listener.FilterChain
-
-		if hasInsecure {
-			httpFC, err := i.httpFilterChain(listenerName, m)
-			if err != nil {
-				return nil, err
-			}
-			filterChains = append(filterChains, httpFC)
+		httpFC, err := i.httpFilterChainForPort(lName, lName, port, m)
+		if err != nil {
+			return nil, err
 		}
 
-		if hasTLSPassthroughForBase {
-			filterChains = append(filterChains, tlsPassthroughFilterChains(m)...)
-		}
-
-		insecureListener := &envoy_config_listener.Listener{
-			Name:         listenerName,
-			FilterChains: filterChains,
+		httpListener := &envoy_config_listener.Listener{
+			Name:         lName,
+			FilterChains: []*envoy_config_listener.FilterChain{httpFC},
 			ListenerFilters: []*envoy_config_listener.ListenerFilter{
 				{
 					Name: tlsInspectorType,
@@ -438,21 +278,10 @@ func (i *cecTranslator) desiredEnvoyListenerPerPort(m *model.Model) ([]ciliumv2.
 				},
 			},
 		}
-		var basePorts []uint32
-		for _, hl := range m.HTTP {
-			if len(hl.TLS) == 0 && !tlsPassthroughPorts[hl.Port] {
-				basePorts = append(basePorts, hl.Port)
-			}
+		for _, fn := range i.listenerMutatorsForPorts(m, []uint32{port}) {
+			httpListener = fn(httpListener)
 		}
-		if hasTLSPassthroughForBase {
-			basePorts = append(basePorts, m.TLSPassthroughPorts()...)
-		}
-		goslices.Sort(basePorts)
-		basePorts = goslices.Compact(basePorts)
-		for _, fn := range i.listenerMutatorsForPorts(m, basePorts) {
-			insecureListener = fn(insecureListener)
-		}
-		res, err := toXdsResource(insecureListener, envoy.ListenerTypeURL)
+		res, err := toXdsResource(httpListener, envoy.ListenerTypeURL)
 		if err != nil {
 			return nil, err
 		}
@@ -494,36 +323,34 @@ func (i *cecTranslator) desiredEnvoyListenerPerPort(m *model.Model) ([]ciliumv2.
 	}
 
 	// One Listener per TLS passthrough port.
-	if needsPerPortTLS {
-		for _, port := range m.TLSPassthroughPorts() {
-			lName := listenerNameForPort(port)
+	for _, port := range m.TLSPassthroughPorts() {
+		lName := listenerNameForPort(port)
 
-			tlsFC := tlsPassthroughFilterChainsForPort(port, m)
-			if len(tlsFC) == 0 {
-				continue
-			}
+		tlsFC := tlsPassthroughFilterChainsForPort(port, m)
+		if len(tlsFC) == 0 {
+			continue
+		}
 
-			tlsListener := &envoy_config_listener.Listener{
-				Name:         lName,
-				FilterChains: tlsFC,
-				ListenerFilters: []*envoy_config_listener.ListenerFilter{
-					{
-						Name: tlsInspectorType,
-						ConfigType: &envoy_config_listener.ListenerFilter_TypedConfig{
-							TypedConfig: toAny(&envoy_extensions_listener_tls_inspector_v3.TlsInspector{}),
-						},
+		tlsListener := &envoy_config_listener.Listener{
+			Name:         lName,
+			FilterChains: tlsFC,
+			ListenerFilters: []*envoy_config_listener.ListenerFilter{
+				{
+					Name: tlsInspectorType,
+					ConfigType: &envoy_config_listener.ListenerFilter_TypedConfig{
+						TypedConfig: toAny(&envoy_extensions_listener_tls_inspector_v3.TlsInspector{}),
 					},
 				},
-			}
-			for _, fn := range i.listenerMutatorsForPorts(m, []uint32{port}) {
-				tlsListener = fn(tlsListener)
-			}
-			res, err := toXdsResource(tlsListener, envoy.ListenerTypeURL)
-			if err != nil {
-				return nil, err
-			}
-			allResources = append(allResources, res)
+			},
 		}
+		for _, fn := range i.listenerMutatorsForPorts(m, []uint32{port}) {
+			tlsListener = fn(tlsListener)
+		}
+		res, err := toXdsResource(tlsListener, envoy.ListenerTypeURL)
+		if err != nil {
+			return nil, err
+		}
+		allResources = append(allResources, res)
 	}
 
 	return allResources, nil

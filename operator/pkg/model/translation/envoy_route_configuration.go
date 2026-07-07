@@ -35,20 +35,7 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 
 	for _, l := range m.HTTP {
 		for _, r := range l.Routes {
-			port := insecureHost
-			if len(l.TLS) > 0 {
-				if m.NeedsPerPortListeners() {
-					port = fmt.Sprintf("%d", l.Port)
-				} else {
-					port = secureHost
-				}
-			} else {
-				if m.NeedsPerPortHTTPListeners() {
-					port = fmt.Sprintf("%d", l.Port)
-				} else {
-					port = insecureHost
-				}
-			}
+			port := fmt.Sprintf("%d", l.Port)
 
 			if len(r.Hostnames) == 0 {
 				hnr := hostnameRedirect{
@@ -84,15 +71,9 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 	goslices.Sort(allPorts)
 
 	// Also emit an empty RouteConfiguration for configured ports with no routes.
-	if !m.NeedsPerPortHTTPListeners() {
-		if !goslices.Contains(allPorts, insecureHost) && m.IsHTTPListenerConfigured() {
-			allPorts = append([]string{insecureHost}, allPorts...)
-		}
-	} else {
-		for _, httpPort := range httpPlainPortKeys(m) {
-			if !goslices.Contains(allPorts, httpPort) {
-				allPorts = append(allPorts, httpPort)
-			}
+	for _, httpPort := range httpPlainPortKeys(m) {
+		if !goslices.Contains(allPorts, httpPort) {
+			allPorts = append(allPorts, httpPort)
 		}
 	}
 	for _, httpsPort := range httpsPortKeys(m) {
@@ -100,16 +81,7 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 			allPorts = append(allPorts, httpsPort)
 		}
 	}
-	goslices.SortFunc(allPorts, func(a, b string) int {
-		// "insecure" always sorts first to preserve backward-compatible ordering.
-		if a == insecureHost {
-			return -1
-		}
-		if b == insecureHost {
-			return 1
-		}
-		return cmp.Compare(a, b)
-	})
+	goslices.Sort(allPorts)
 
 	for _, port := range allPorts {
 		// the route name should match the value in http connection manager
@@ -118,25 +90,9 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 
 		hostNames, exists := portHostNameRedirect[port]
 		if !exists {
-			if port == insecureHost {
-				if !m.IsHTTPListenerConfigured() {
-					continue
-				}
-			} else if port == secureHost {
-				// Legacy single-HTTPS-port mode.
-				if !m.IsHTTPSListenerConfigured() {
-					continue
-				}
-			} else if m.NeedsPerPortHTTPListeners() {
-				// per-port HTTP mode: skip if no HTTP listener uses this port.
-				if !m.IsHTTPPlainPortConfigured(parseUint32(port)) {
-					continue
-				}
-			} else {
-				// per-port mode: skip if no HTTPS listener uses this port.
-				if !m.IsHTTPSPortConfigured(parseUint32(port)) {
-					continue
-				}
+			// per-port mode: skip if no HTTP listener uses this port.
+			if !m.IsHTTPPlainPortConfigured(parseUint32(port)) && !m.IsHTTPSPortConfigured(parseUint32(port)) {
+				continue
 			}
 			rc, err := routeConfiguration(routeName, nil)
 			if err != nil {
@@ -151,30 +107,26 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 		// Add HTTPS redirect virtual hosts across all configured HTTPS ports.
 		// In per-port HTTP mode, emit redirects for each plain HTTP port that has
 		// routes from a listener with ForceHTTPtoHTTPSRedirect = true.
-		if port == insecureHost || m.NeedsPerPortHTTPListeners() {
-			for _, httpsPort := range httpsPortKeys(m) {
-				for _, h := range slices.Unique(portHostNameRedirect[httpsPort]) {
-					if h.redirect {
-						if _, already := redirectedHost[h.hostname]; already {
-							continue
-						}
-						redirectedHost[h.hostname] = struct{}{}
-						vhs := i.desiredVirtualHost(hostNamePortRoutes[h.hostname][httpsPort], VirtualHostParameter{
-							HostNames:      []string{h.hostname},
-							HTTPSRedirect:  true,
-							ListenerPort:   m.HTTP[0].Port,
-							AllAuthFilters: allAuthFilters,
-						})
-						virtualhosts = append(virtualhosts, vhs)
+		for _, httpsPort := range httpsPortKeys(m) {
+			for _, h := range slices.Unique(portHostNameRedirect[httpsPort]) {
+				if h.redirect {
+					if _, already := redirectedHost[h.hostname]; already {
+						continue
 					}
+					redirectedHost[h.hostname] = struct{}{}
+					vhs := i.desiredVirtualHost(hostNamePortRoutes[h.hostname][httpsPort], VirtualHostParameter{
+						HostNames:      []string{h.hostname},
+						HTTPSRedirect:  true,
+						ListenerPort:   parseUint32(httpsPort),
+						AllAuthFilters: allAuthFilters,
+					})
+					virtualhosts = append(virtualhosts, vhs)
 				}
 			}
 		}
 		for _, h := range slices.Unique(hostNames) {
-			if port == insecureHost {
-				if _, ok := redirectedHost[h.hostname]; ok {
-					continue
-				}
+			if _, ok := redirectedHost[h.hostname]; ok {
+				continue
 			}
 			routes, exists := hostNamePortRoutes[h.hostname][port]
 			if !exists {
@@ -183,7 +135,7 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 			vhs := i.desiredVirtualHost(routes, VirtualHostParameter{
 				HostNames:      []string{h.hostname},
 				HTTPSRedirect:  false,
-				ListenerPort:   m.HTTP[0].Port,
+				ListenerPort:   parseUint32(port),
 				AllAuthFilters: allAuthFilters,
 			})
 			virtualhosts = append(virtualhosts, vhs)
@@ -202,13 +154,6 @@ func (i *cecTranslator) desiredEnvoyHTTPRouteConfiguration(m *model.Model) ([]ci
 
 // httpsPortKeys returns sorted, unique port strings for all HTTPS listeners in the model.
 func httpsPortKeys(m *model.Model) []string {
-	if !m.NeedsPerPortListeners() {
-		// No per-port splitting needed: use the legacy "secure" key for the HTTPS port.
-		if m.IsHTTPSListenerConfigured() {
-			return []string{secureHost}
-		}
-		return nil
-	}
 	seen := map[string]struct{}{}
 	for _, l := range m.HTTP {
 		if len(l.TLS) > 0 {
@@ -225,13 +170,6 @@ func httpsPortKeys(m *model.Model) []string {
 
 // httpPlainPortKeys returns sorted, unique port strings for all plain HTTP listeners in the model.
 func httpPlainPortKeys(m *model.Model) []string {
-	if !m.NeedsPerPortHTTPListeners() {
-		// No per-port splitting needed: use the legacy "insecure" key for plain HTTP.
-		if m.IsHTTPListenerConfigured() {
-			return []string{insecureHost}
-		}
-		return nil
-	}
 	seen := map[string]struct{}{}
 	for _, l := range m.HTTP {
 		if len(l.TLS) == 0 {

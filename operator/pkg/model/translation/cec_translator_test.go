@@ -405,6 +405,7 @@ func TestSharedIngressTranslator_getListener(t *testing.T) {
 	res, err := i.desiredEnvoyListener(&model.Model{
 		HTTP: []model.HTTPListener{
 			{
+				Port: 443,
 				TLS: []model.TLSSecret{
 					{
 						Name:      "dummy-secret",
@@ -422,25 +423,18 @@ func TestSharedIngressTranslator_getListener(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, listener.ListenerFilters, 1)
-	require.Len(t, listener.FilterChains, 2)
+	require.Len(t, listener.FilterChains, 1)
 	require.Len(t, listener.FilterChains[0].Filters, 1)
 	require.Len(t, listener.SocketOptions, 4)
 	require.IsType(t, &envoy_config_listener.Filter_TypedConfig{}, listener.FilterChains[0].Filters[0].ConfigType)
 
 	// check for connection manager
-	insecureConnectionManager := &envoy_http_connection_manager_v3.HttpConnectionManager{}
-	err = proto.Unmarshal(listener.FilterChains[0].Filters[0].ConfigType.(*envoy_config_listener.Filter_TypedConfig).TypedConfig.Value, insecureConnectionManager)
-	require.NoError(t, err)
-
-	require.Equal(t, "listener-insecure", insecureConnectionManager.StatPrefix)
-	require.Equal(t, "listener-insecure", insecureConnectionManager.GetRds().RouteConfigName)
-
 	secureConnectionManager := &envoy_http_connection_manager_v3.HttpConnectionManager{}
-	err = proto.Unmarshal(listener.FilterChains[1].Filters[0].ConfigType.(*envoy_config_listener.Filter_TypedConfig).TypedConfig.Value, secureConnectionManager)
+	err = proto.Unmarshal(listener.FilterChains[0].Filters[0].ConfigType.(*envoy_config_listener.Filter_TypedConfig).TypedConfig.Value, secureConnectionManager)
 	require.NoError(t, err)
 
-	require.Equal(t, "listener-secure", secureConnectionManager.StatPrefix)
-	require.Equal(t, "listener-secure", secureConnectionManager.GetRds().RouteConfigName)
+	require.Equal(t, "listener-443", secureConnectionManager.StatPrefix)
+	require.Equal(t, "listener-443", secureConnectionManager.GetRds().RouteConfigName)
 
 	// check TLS configuration
 	require.Equal(t, "envoy.transport_sockets.tls", listener.FilterChains[1].TransportSocket.Name)

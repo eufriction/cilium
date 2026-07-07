@@ -54,7 +54,7 @@ var defaultBackendModel = &model.Model{
 
 var defaultBackendExpectedConfig = []*envoy_config_route_v3.RouteConfiguration{
 	{
-		Name: "listener-insecure",
+		Name: "listener-80",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "*",
@@ -170,7 +170,7 @@ var hostRulesModel = &model.Model{
 
 var hostRulesExpectedConfig = []*envoy_config_route_v3.RouteConfiguration{
 	{
-		Name: "listener-insecure",
+		Name: "listener-80",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "*.foo.com",
@@ -195,7 +195,7 @@ var hostRulesExpectedConfig = []*envoy_config_route_v3.RouteConfiguration{
 		},
 	},
 	{
-		Name: "listener-secure",
+		Name: "listener-443",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "foo.bar.com",
@@ -312,7 +312,7 @@ var hostRulesModelEnforcedHTTPS = &model.Model{
 
 var hostRulesExpectedConfigEnforceHTTPS = []*envoy_config_route_v3.RouteConfiguration{
 	{
-		Name: "listener-insecure",
+		Name: "listener-80",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "*.foo.com",
@@ -337,21 +337,7 @@ var hostRulesExpectedConfigEnforceHTTPS = []*envoy_config_route_v3.RouteConfigur
 		},
 	},
 	{
-		Name: "listener-secure",
-		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
-			{
-				Name:    "foo.bar.com",
-				Domains: domainsHelper("foo.bar.com"),
-				Routes: []*envoy_config_route_v3.Route{
-					{
-						Match:  envoyRouteMatchRootPath(),
-						Action: envoyRouteAction("random-namespace", "foo-bar-com", "http"),
-					},
-				},
-			},
-		},
-	},
-}
+		Name: "listener-443",
 
 var pathRulesModel = &model.Model{
 	HTTP: []model.HTTPListener{
@@ -532,7 +518,7 @@ var pathRulesModel = &model.Model{
 
 var pathRulesExpectedConfig = []*envoy_config_route_v3.RouteConfiguration{
 	{
-		Name: "listener-insecure",
+		Name: "listener-80",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "exact-path-rules",
@@ -950,12 +936,16 @@ var complexIngressModelwithRedirects = &model.Model{
 
 var complexIngressExpectedConfig = []*envoy_config_route_v3.RouteConfiguration{
 	{
-		Name: "listener-insecure",
+		Name: "listener-80",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "*",
 				Domains: domainsHelper("*"),
 				Routes: []*envoy_config_route_v3.Route{
+					{
+						Match:  envoyRouteMatchRootPath(),
+						Action: envoyRouteAction("dummy-namespace", "default-backend", "8080"),
+					},
 					{
 						Match:  envoyRouteMatchExactPath("/dummy-path"),
 						Action: envoyRouteAction("dummy-namespace", "dummy-backend", "8080"),
@@ -964,16 +954,12 @@ var complexIngressExpectedConfig = []*envoy_config_route_v3.RouteConfiguration{
 						Match:  envoyRouteMatchPrefixPath("/another-dummy-path"),
 						Action: envoyRouteAction("dummy-namespace", "another-dummy-backend", "8081"),
 					},
-					{
-						Match:  envoyRouteMatchRootPath(),
-						Action: envoyRouteAction("dummy-namespace", "default-backend", "8080"),
-					},
 				},
 			},
 		},
 	},
 	{
-		Name: "listener-secure",
+		Name: "listener-443",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "another-very-secure.server.com",
@@ -1017,7 +1003,7 @@ var complexIngressExpectedConfig = []*envoy_config_route_v3.RouteConfiguration{
 
 var complexIngressExpectedConfigEnforceHTTPS = []*envoy_config_route_v3.RouteConfiguration{
 	{
-		Name: "listener-insecure",
+		Name: "listener-80",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "*",
@@ -1076,7 +1062,7 @@ var complexIngressExpectedConfigEnforceHTTPS = []*envoy_config_route_v3.RouteCon
 		},
 	},
 	{
-		Name: "listener-secure",
+		Name: "listener-443",
 		VirtualHosts: []*envoy_config_route_v3.VirtualHost{
 			{
 				Name:    "another-very-secure.server.com",

@@ -4,6 +4,7 @@
 package translation
 
 import (
+	"sort"
 	"testing"
 
 	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -775,7 +776,7 @@ func TestDesiredEnvoyListenerPerPort(t *testing.T) {
 
 	res, err := i.desiredEnvoyListener(multiPortHTTPSModel)
 	require.NoError(t, err)
-	require.Len(t, res, 3, "expected 3 Envoy Listeners: insecure, listener-443, listener-50051")
+	require.Len(t, res, 3, "expected 3 Envoy Listeners: listener-80, listener-443, listener-50051")
 
 	decodeListener := func(r ciliumv2.XDSResource) *envoy_config_listener.Listener {
 		l := &envoy_config_listener.Listener{}
@@ -789,14 +790,21 @@ func TestDesiredEnvoyListenerPerPort(t *testing.T) {
 		return hcm
 	}
 
-	// insecure listener
+	// sort by listener name for consistent testing
+	sort.Slice(res, func(i, j int) bool {
+		li := decodeListener(res[i])
+		lj := decodeListener(res[j])
+		return li.Name < lj.Name
+	})
+
+	// listener-80 (plain HTTP)
 	l0 := decodeListener(res[0])
-	require.Equal(t, "listener", l0.Name)
-	require.Len(t, l0.FilterChains, 1, "insecure listener: one HTTP filter chain")
+	require.Equal(t, "listener-80", l0.Name)
+	require.Len(t, l0.FilterChains, 1, "plain HTTP listener-80: one HTTP filter chain")
 	require.Equal(t, rawBufferTransportProtocol, l0.FilterChains[0].FilterChainMatch.TransportProtocol)
 	hcm0 := decodeHCM(l0.FilterChains[0])
-	require.Equal(t, "listener-insecure", hcm0.StatPrefix)
-	require.Equal(t, "listener-insecure", hcm0.GetRds().GetRouteConfigName())
+	require.Equal(t, "listener-80", hcm0.StatPrefix)
+	require.Equal(t, "listener-80", hcm0.GetRds().GetRouteConfigName())
 
 	// port 443
 	l1 := decodeListener(res[1])
@@ -949,8 +957,8 @@ func TestDesiredEnvoyListenerCatchAllHTTPSWithMultiPortTLSPassthrough(t *testing
 	require.Equal(t, "default:tls-backend-50051:9443", tcpProxy2.GetCluster())
 }
 
-// TestDesiredEnvoyListenerSingleHTTPS checks that a single-HTTPS-port model
-// still produces one combined Listener, preserving the original behaviour.
+// TestDesiredEnvoyListenerSingleHTTPS checks that a model with both HTTP and HTTPS
+// produces one Listener per port with per-port naming.
 func TestDesiredEnvoyListenerSingleHTTPS(t *testing.T) {
 	i := &cecTranslator{
 		Config: Config{
@@ -960,13 +968,22 @@ func TestDesiredEnvoyListenerSingleHTTPS(t *testing.T) {
 
 	res, err := i.desiredEnvoyListener(hostRulesModel)
 	require.NoError(t, err)
-	require.Len(t, res, 1, "single HTTPS port: one combined listener")
+	require.Len(t, res, 2, "HTTP port 80 + HTTPS port 443: two per-port listeners")
 
-	l := &envoy_config_listener.Listener{}
-	require.NoError(t, proto.Unmarshal(res[0].Value, l))
+	// Sort resources by listener name for consistent testing
+	sort.Slice(res, func(i, j int) bool {
+		li := &envoy_config_listener.Listener{}
+		lj := &envoy_config_listener.Listener{}
+		proto.Unmarshal(res[i].Value, li)
+		proto.Unmarshal(res[j].Value, lj)
+		return li.Name < lj.Name
+	})
 
-	require.Equal(t, "listener", l.Name)
-	require.Len(t, l.FilterChains, 2)
+	// Check listener-80 (HTTP)
+	l80 := &envoy_config_listener.Listener{}
+	require.NoError(t, proto.Unmarshal(res[0].Value, l80))
+	require.Equal(t, "listener-80", l80.Name)
+	require.Len(t, l80.FilterChains, 1)
 
 	decodeHCM := func(fc *envoy_config_listener.FilterChain) *envoy_extensions_filters_network_hcm_v3.HttpConnectionManager {
 		hcm := &envoy_extensions_filters_network_hcm_v3.HttpConnectionManager{}
@@ -974,9 +991,15 @@ func TestDesiredEnvoyListenerSingleHTTPS(t *testing.T) {
 		return hcm
 	}
 
-	hcm0 := decodeHCM(l.FilterChains[0])
-	require.Equal(t, "listener-insecure", hcm0.GetRds().GetRouteConfigName())
+	hcm80 := decodeHCM(l80.FilterChains[0])
+	require.Equal(t, "listener-80", hcm80.GetRds().GetRouteConfigName())
 
-	hcm1 := decodeHCM(l.FilterChains[1])
-	require.Equal(t, "listener-secure", hcm1.GetRds().GetRouteConfigName())
+	// Check listener-443 (HTTPS)
+	l443 := &envoy_config_listener.Listener{}
+	require.NoError(t, proto.Unmarshal(res[1].Value, l443))
+	require.Equal(t, "listener-443", l443.Name)
+	require.Len(t, l443.FilterChains, 1)
+
+	hcm443 := decodeHCM(l443.FilterChains[0])
+	require.Equal(t, "listener-443", hcm443.GetRds().GetRouteConfigName())
 }

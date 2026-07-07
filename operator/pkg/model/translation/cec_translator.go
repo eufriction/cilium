@@ -4,7 +4,6 @@
 package translation
 
 import (
-	goslices "slices"
 	"sort"
 	"strconv"
 
@@ -19,9 +18,6 @@ import (
 )
 
 const (
-	insecureHost = "insecure"
-	secureHost   = "secure"
-
 	AppProtocolH2C = "kubernetes.io/h2c"
 	AppProtocolWS  = "kubernetes.io/ws"
 	AppProtocolWSS = "kubernetes.io/wss"
@@ -157,38 +153,7 @@ func (i *cecTranslator) desiredBackendServices(m *model.Model) ([]*ciliumv2.Serv
 }
 
 func (i *cecTranslator) desiredServicesWithPorts(namespace string, name string, m *model.Model) ([]*ciliumv2.ServiceListener, error) {
-	if m.NeedsPerPortListeners() {
-		return i.desiredServicesWithPortsSplit(namespace, name, m)
-	}
-	return i.desiredServicesWithPortsCombined(namespace, name, m)
-}
-
-// desiredServicesWithPortsCombined returns a single ServiceListener covering all ports.
-func (i *cecTranslator) desiredServicesWithPortsCombined(namespace string, name string, m *model.Model) ([]*ciliumv2.ServiceListener, error) {
-	allPorts := make(map[uint16]struct{})
-
-	for _, hl := range m.HTTP {
-		allPorts[uint16(hl.Port)] = struct{}{}
-	}
-	for _, tlsl := range m.TLSPassthrough {
-		if len(tlsl.Routes) > 0 {
-			allPorts[uint16(tlsl.Port)] = struct{}{}
-		}
-	}
-
-	ports := make([]uint16, 0, len(allPorts))
-	for p := range allPorts {
-		ports = append(ports, p)
-	}
-	goslices.Sort(ports)
-
-	return []*ciliumv2.ServiceListener{
-		{
-			Namespace: namespace,
-			Name:      shortener.ShortenK8sResourceName(name),
-			Ports:     ports,
-		},
-	}, nil
+	return i.desiredServicesWithPortsSplit(namespace, name, m)
 }
 
 // desiredServicesWithPortsSplit returns per-port ServiceListeners for HTTPS and
@@ -205,34 +170,15 @@ func (i *cecTranslator) desiredServicesWithPortsSplit(namespace string, name str
 	}
 
 	// Plaintext HTTP ports.
-	if m.NeedsPerPortHTTPListeners() {
-		// One entry per plain HTTP port.
-		for _, port := range m.HTTPPlainPortsSorted() {
-			envoyListenerName := listenerNameForPort(port)
-			result = append(result, &ciliumv2.ServiceListener{
-				Namespace: namespace,
-				Name:      shortenedName,
-				Ports:     []uint16{uint16(port)},
-				Listener:  envoyListenerName,
-			})
-		}
-	} else {
-		var httpPorts []uint16
-		for _, hl := range m.HTTP {
-			if len(hl.TLS) == 0 && !tlsPassthroughPorts[hl.Port] {
-				httpPorts = append(httpPorts, uint16(hl.Port))
-			}
-		}
-		goslices.Sort(httpPorts)
-		httpPorts = goslices.Compact(httpPorts)
-		if len(httpPorts) > 0 {
-			result = append(result, &ciliumv2.ServiceListener{
-				Namespace: namespace,
-				Name:      shortenedName,
-				Ports:     httpPorts,
-				Listener:  listenerName,
-			})
-		}
+	// Always emit per-port entries for plain HTTP ports.
+	for _, port := range m.HTTPPlainPortsSorted() {
+		envoyListenerName := listenerNameForPort(port)
+		result = append(result, &ciliumv2.ServiceListener{
+			Namespace: namespace,
+			Name:      shortenedName,
+			Ports:     []uint16{uint16(port)},
+			Listener:  envoyListenerName,
+		})
 	}
 
 	// One entry per HTTPS port.
@@ -247,34 +193,15 @@ func (i *cecTranslator) desiredServicesWithPortsSplit(namespace string, name str
 	}
 
 	// TLS passthrough ports.
-	if m.NeedsPerPortTLSPassthroughListeners() {
-		// One entry per TLS passthrough port.
-		for _, port := range m.TLSPassthroughPorts() {
-			envoyListenerName := listenerNameForPort(port)
-			result = append(result, &ciliumv2.ServiceListener{
-				Namespace: namespace,
-				Name:      shortenedName,
-				Ports:     []uint16{uint16(port)},
-				Listener:  envoyListenerName,
-			})
-		}
-	} else {
-		var ptPorts []uint16
-		for _, tlsl := range m.TLSPassthrough {
-			if len(tlsl.Routes) > 0 {
-				ptPorts = append(ptPorts, uint16(tlsl.Port))
-			}
-		}
-		goslices.Sort(ptPorts)
-		ptPorts = goslices.Compact(ptPorts)
-		if len(ptPorts) > 0 {
-			result = append(result, &ciliumv2.ServiceListener{
-				Namespace: namespace,
-				Name:      shortenedName,
-				Ports:     ptPorts,
-				Listener:  listenerName,
-			})
-		}
+	// Always emit per-port entries for TLS passthrough ports.
+	for _, port := range m.TLSPassthroughPorts() {
+		envoyListenerName := listenerNameForPort(port)
+		result = append(result, &ciliumv2.ServiceListener{
+			Namespace: namespace,
+			Name:      shortenedName,
+			Ports:     []uint16{uint16(port)},
+			Listener:  envoyListenerName,
+		})
 	}
 
 	return result, nil
